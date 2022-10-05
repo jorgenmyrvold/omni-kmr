@@ -7,20 +7,18 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 #
 
-import omni
-import math
-import omni.kit.commands
 import asyncio
-import weakref
+
+import carb
+import omni
 import omni.ui as ui
+import omni.kit.commands
 import omni.graph.core as og
-
-from omni.kit.menu.utils import add_menu_items, remove_menu_items, MenuItemDescription
 from omni.isaac.urdf import _urdf
+from omni.isaac.core.utils.extensions import disable_extension, enable_extension
+from omni.isaac.range_sensor._range_sensor import acquire_lidar_sensor_interface
+from pxr import Sdf, Gf, UsdPhysics
 
-from omni.isaac.ui.ui_utils import setup_ui_headers, get_style, btn_builder
-
-from pxr import UsdLux, Sdf, Gf, UsdPhysics
 
 EXTENSION_NAME = "KMR iiwa importer"
 WAREHOUSE_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
@@ -29,7 +27,11 @@ KMR_PATH = "/home/jorgen/kmriiwa_description/src/kmriiwa_description/urdf/robot/
 class Extension(omni.ext.IExt):
     def on_startup(self, ext_id: str):
         print("[omni.kmr] MyExtension startup")
-
+        disable_extension("omni.isaac.ros_bridge")
+        print("ROS Bridge disabled")
+        enable_extension("omni.isaac.ros2_bridge")
+        print("ROS 2 Bridge enabled")
+        
         ext_manager = omni.kit.app.get_app().get_extension_manager()
         self._ext_id = ext_id
         self._extension_path = ext_manager.get_extension_path(ext_id)
@@ -70,8 +72,10 @@ class Extension(omni.ext.IExt):
             
             # Load robot urdf
             res, self._kmr_prim = self._load_kmr()
+            self._rig_robot()
             self._setup_graph_kmp()
             self._setup_graph_iiwa()
+            self._setup_ros2_graph()
             
 
     def _load_kmr(self, urdf_filepath=KMR_PATH):
@@ -97,6 +101,83 @@ class Extension(omni.ext.IExt):
         )
         return result, prim_path
     
+    def _create_lidar_sensor(self, parent_prim):
+        result, prim = omni.kit.commands.execute(
+            "RangeSensorCreateLidar",
+            path="/Lidar",
+            parent=parent_prim,
+            min_range=0.4,
+            max_range=100.0,
+            draw_points=False,
+            draw_lines=False,
+            horizontal_fov=360.0,
+            vertical_fov=30.0,
+            horizontal_resolution=0.4,
+            vertical_resolution=4.0,
+            rotation_rate=20.0,
+            high_lod=False,
+            yaw_offset=0.0,
+            enable_semantics=False,
+        )
+        if result:
+            print(f"Created lidar at {prim}")
+        else:
+            print(f"Failed creating lidar under{parent_prim}")
+        return result, prim
+    
+    def _rig_robot(self):
+        result1, self._lidar1_prim = self._create_lidar_sensor(f"{self._kmr_prim}/kmriiwa_laser_B1_link")
+        result2, self._lidar2_prim = self._create_lidar_sensor(f"{self._kmr_prim}/kmriiwa_laser_B4_link")
+        
+        # TODO: Add cameras and other relevant sensors
+        
+    
+    def _setup_lidar_graph(self, lidar_prim):
+        # TODO Create generic function for creatig lidar publishers that takes a random lidar
+        return
+    
+    def _setup_ros2_graph(self):
+        print("TYPE:",type(self._lidar1_prim))
+        print("TYPE:",type(self._stage.GetPrimAtPath(Sdf.Path(self._kmr_prim))))
+        print("TYPE:",type(self._stage.GetPrimAtPath(Sdf.Path(f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar"))))
+        
+        
+        keys = og.Controller.Keys
+        og.Controller.edit(
+            {"graph_path": "/ros2_graph", "evaluator_name": "execution"},
+            {
+                keys.CREATE_NODES: [
+                    ("on_playback_tick", "omni.graph.action.OnPlaybackTick"),
+                    ("isaac_read_lidar_beam_node", "omni.isaac.range_sensor.IsaacReadLidarBeams"),
+                    ("ros2_context", "omni.isaac.ros2_bridge.ROS2Context"),
+                    ("constant_string_frame_id", "omni.graph.nodes.ConstantString"),
+                    ("isaac_read_sim_time", "omni.isaac.core_nodes.IsaacReadSimulationTime"),
+                    ("ros2_publish_laser_scan", "omni.isaac.ros2_bridge.ROS2PublishLaserScan"),
+                ],
+                keys.SET_VALUES: [
+                    # TODO: Wrong type passed to "lidarPrim". Fix this later...
+                    ("isaac_read_lidar_beam_node.inputs:lidarPrim", self._stage.GetPrimAtPath(Sdf.Path(f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar"))),
+                    ("ros2_publish_laser_scan.inputs:topicName", "/laser_scan1"),
+                    ("constant_string_frame_id.inputs:value", "kmr")
+                ],
+                keys.CONNECT: [
+                    ("on_playback_tick.outputs:tick", "isaac_read_lidar_beam_node.inputs:execIn"),
+                    ("isaac_read_lidar_beam_node.outputs:execOut", "ros2_publish_laser_scan.inputs:execIn"),
+                    ("isaac_read_lidar_beam_node.outputs:azimuthRange", "ros2_publish_laser_scan.inputs:azimuthRange"),
+                    ("isaac_read_lidar_beam_node.outputs:depthRange", "ros2_publish_laser_scan.inputs:depthRange"),
+                    ("isaac_read_lidar_beam_node.outputs:horizontalFov", "ros2_publish_laser_scan.inputs:horizontalFov"),
+                    ("isaac_read_lidar_beam_node.outputs:horizontalResolution", "ros2_publish_laser_scan.inputs:horizontalResolution"),
+                    ("isaac_read_lidar_beam_node.outputs:intensitiesData", "ros2_publish_laser_scan.inputs:intensitiesData"),
+                    ("isaac_read_lidar_beam_node.outputs:linearDepthData", "ros2_publish_laser_scan.inputs:linearDepthData"),
+                    ("isaac_read_lidar_beam_node.outputs:numCols", "ros2_publish_laser_scan.inputs:numCols"),
+                    ("isaac_read_lidar_beam_node.outputs:numRows", "ros2_publish_laser_scan.inputs:numRows"),
+                    ("isaac_read_lidar_beam_node.outputs:rotationRate", "ros2_publish_laser_scan.inputs:rotationRate"),
+                    ("ros2_context.outputs:context", "ros2_publish_laser_scan.inputs:context"),
+                    ("constant_string_frame_id.inputs:value", "ros2_publish_laser_scan.inputs:frameId"),
+                    ("isaac_read_sim_time.outputs:simulationTime", "ros2_publish_laser_scan.inputs:timeStamp"),
+                ],
+            }
+        )
     
     def _setup_graph_kmp(self):
         keys = og.Controller.Keys
