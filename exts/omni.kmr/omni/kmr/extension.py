@@ -8,7 +8,6 @@
 #
 
 import asyncio
-from socket import CAN_BCM_TX_EXPIRED
 import omni
 import omni.ui as ui
 import omni.kit.commands
@@ -366,7 +365,7 @@ class Extension(omni.ext.IExt):
             {
                 keys.CREATE_NODES: [
                     ("on_playback_tick", "omni.graph.action.OnPlaybackTick"),
-                    ("constant_uint", "omni.graph.nodes.ConstantUInt"),
+                    ("viewport_id", "omni.graph.nodes.ConstantUInt"),
                     ("isaac_create_viewport", "omni.isaac.core_nodes.IsaacCreateViewport"),
                     ("get_prim_path", "omni.graph.nodes.GetPrimPath"),
                     ("set_active_camera", "omni.graph.ui.SetActiveViewportCamera"),
@@ -377,9 +376,9 @@ class Extension(omni.ext.IExt):
                     ("ros2_context", "omni.isaac.ros2_bridge.ROS2Context"),
                 ],
                 keys.SET_VALUES: [
-                    ("constant_uint.inputs:value", 0),  # UNIQUE
+                    ("viewport_id.inputs:value", 0),  # UNIQUE
                     ("ros2_context.outputs:context", 0),
-                    ("frame_id.inputs:value", ROS2_FRAME_ID),  # TODO: Check if this frame is is working
+                    ("frame_id.inputs:value", ROS2_FRAME_ID),
                     ("set_active_camera.inputs:primPath", "/World/Camera_1"),
                     ("ros2_camera_helper_rgb.inputs:type", "rgb"),
                     ("ros2_camera_helper_rgb.inputs:topicName", "rgb"),
@@ -390,8 +389,7 @@ class Extension(omni.ext.IExt):
                 ],
                 keys.CONNECT: [
                     ("on_playback_tick.outputs:tick", "isaac_create_viewport.inputs:execIn"),
-                    ("constant_uint.inputs:value", "isaac_create_viewport.inputs:viewportId"),
-                    # ("get_prim_path.outputs:primPath", "set_active_camera.inputs:cameraPath"),
+                    ("viewport_id.inputs:value", "isaac_create_viewport.inputs:viewportId"),
                     ("isaac_create_viewport.outputs:execOut", "set_active_camera.inputs:execIn"),
                     ("isaac_create_viewport.outputs:viewport", "set_active_camera.inputs:viewport"),
                     ("isaac_create_viewport.outputs:viewport", "ros2_camera_helper_rgb.inputs:viewport"),
@@ -409,8 +407,4 @@ class Extension(omni.ext.IExt):
                 ]
             }
         )
-        # get_prim_path_og_path = f"{graph_path}/get_prim_path"
-        # usd_prim = self._stage.GetPrimAtPath(get_prim_path_og_path)
-        # usd_prim.GetRelationship("inputs:prim").AddTarget("/World/Camera_1")
-        
         print(f"[+] Created {graph_path}")
