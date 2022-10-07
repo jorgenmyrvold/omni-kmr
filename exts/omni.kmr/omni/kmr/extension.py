@@ -8,10 +8,12 @@
 #
 
 import asyncio
+from socket import CAN_BCM_TX_EXPIRED
 import omni
 import omni.ui as ui
 import omni.kit.commands
 import omni.graph.core as og
+import omni.replicator.core as rep
 from omni.isaac.urdf import _urdf
 from omni.isaac.core.utils.extensions import disable_extension, enable_extension
 from omni.isaac.range_sensor._range_sensor import acquire_lidar_sensor_interface
@@ -19,11 +21,13 @@ from pxr import Sdf, Gf, UsdPhysics, Usd, UsdGeom
 
 
 EXTENSION_NAME = "KMR iiwa importer"
-# ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
+ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
 # ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"
-ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/default_environment.usd"
+# ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/default_environment.usd"
 ENVIRONMENT_PRIM_PATH = "/World/environment"
 KMR_PATH = "/home/jorgen/kmriiwa_description/src/kmriiwa_description/urdf/robot/kmriiwa.urdf"
+ROS2_FRAME_ID = "map"
+
 
 class Extension(omni.ext.IExt):
     def on_startup(self, ext_id: str):
@@ -55,7 +59,7 @@ class Extension(omni.ext.IExt):
         if task in done:
             # Create default world prim
             self._stage = omni.usd.get_context().get_stage()
-            world_prim = self._stage.OverridePrim("/World")
+            world_prim = self._stage.DefinePrim("/World")
             self._stage.SetDefaultPrim(world_prim)
             
             # Create a pyhysics scene
@@ -64,7 +68,7 @@ class Extension(omni.ext.IExt):
             scene.CreateGravityMagnitudeAttr().Set(9.81)
             
             # Create warehouse reference
-            ref_warehouse = self._stage.OverridePrim(ENVIRONMENT_PRIM_PATH)
+            ref_warehouse = self._stage.DefinePrim(ENVIRONMENT_PRIM_PATH)
             omni.kit.commands.execute("AddReference",
                 stage=self._stage,
                 prim_path=Sdf.Path(ENVIRONMENT_PRIM_PATH),  # an existing prim to add the reference to.
@@ -75,10 +79,16 @@ class Extension(omni.ext.IExt):
             # Load robot urdf
             res, self._kmr_prim = self._load_kmr()
             self._rig_robot()
+            
+            # Set up different omnigraphs
+            keys = og.Controller.Keys
             # self._setup_graph_kmp()
-            self._setup_graph_iiwa()
-            self._setup_lidar_graph(is_front_lidar=True)
-            self._setup_lidar_graph(is_front_lidar=False)
+            self._setup_graph_iiwa(keys)
+            self._setup_lidar_graph(keys, is_front_lidar=True)
+            self._setup_lidar_graph(keys, is_front_lidar=False)
+            self._setup_tf_graph(keys)
+            self._setup_odom_graph(keys)
+            self._setup_camera_graph(keys)
                         
 
     def _load_kmr(self, urdf_filepath=KMR_PATH):
@@ -132,19 +142,27 @@ class Extension(omni.ext.IExt):
         )
         
         if result:
-            print(f"[+] Created lidar at {prim}")
+            print(f"[+] Created {parent_prim}/Lidar")
         else:
-            print(f"[!] Failed creating lidar under{parent_prim}")
+            print(f"[!] Failed creating {parent_prim}/Lidar")
         return result, prim
 
+
+    def _create_camera(self, parent_prim: str, camera_prim_name: str):
+        # TODO: Connect the camera to an existing prim on the robot
+        camera_prim = self._stage.DefinePrim(f"{parent_prim}{camera_prim_name}", "Camera")
+        UsdGeom.Xformable(camera_prim).AddTranslateOp().Set((0., 0., 1.))
+        UsdGeom.Xformable(camera_prim).AddRotateXYZOp().Set((90., 0., -90.))
+        print(f"[+] Created {parent_prim}{camera_prim_name}")
     
     def _rig_robot(self):
         result1, self._lidar1_prim = self._create_lidar_sensor(is_front_lidar=True)
         result2, self._lidar2_prim = self._create_lidar_sensor(is_front_lidar=False)
         # TODO: Add cameras and other relevant sensors
+        self._create_camera("/World", "/Camera_1")
         
     
-    def _setup_lidar_graph(self, is_front_lidar: bool):
+    def _setup_lidar_graph(self, keys, is_front_lidar: bool):
         if is_front_lidar:
             lidar_num = 1
             lidar_prim_path = f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar"
@@ -153,8 +171,7 @@ class Extension(omni.ext.IExt):
             lidar_prim_path = f"{self._kmr_prim}/kmriiwa_laser_B4_link/Lidar"
             
         graph_path = f"/lidar{lidar_num}_graph"
-        keys = og.Controller.Keys
-        graph = og.Controller.edit(
+        og.Controller.edit(
             {"graph_path": graph_path, "evaluator_name": "execution"},
             {
                 keys.CREATE_NODES: [
@@ -163,28 +180,28 @@ class Extension(omni.ext.IExt):
                     ("ros2_context", "omni.isaac.ros2_bridge.ROS2Context"),
                     ("constant_string_frame_id", "omni.graph.nodes.ConstantString"),
                     ("isaac_read_sim_time", "omni.isaac.core_nodes.IsaacReadSimulationTime"),
-                    ("ros2_publish_laser_scan", "omni.isaac.ros2_bridge.ROS2PublishLaserScan"),
+                    ("ros2_pub_laser_scan", "omni.isaac.ros2_bridge.ROS2PublishLaserScan"),
                 ],
                 keys.SET_VALUES: [
-                    ("ros2_publish_laser_scan.inputs:topicName", f"/laser_scan{lidar_num}"),
-                    ("constant_string_frame_id.inputs:value", "kmr"),
+                    ("ros2_pub_laser_scan.inputs:topicName", f"/laser_scan{lidar_num}"),
+                    ("constant_string_frame_id.inputs:value", ROS2_FRAME_ID),
                     ("ros2_context.outputs:context", 0),
                 ],
                 keys.CONNECT: [
                     ("on_playback_tick.outputs:tick", "isaac_read_lidar_beam_node.inputs:execIn"),
-                    ("isaac_read_lidar_beam_node.outputs:execOut", "ros2_publish_laser_scan.inputs:execIn"),
-                    ("isaac_read_lidar_beam_node.outputs:azimuthRange", "ros2_publish_laser_scan.inputs:azimuthRange"),
-                    ("isaac_read_lidar_beam_node.outputs:depthRange", "ros2_publish_laser_scan.inputs:depthRange"),
-                    ("isaac_read_lidar_beam_node.outputs:horizontalFov", "ros2_publish_laser_scan.inputs:horizontalFov"),
-                    ("isaac_read_lidar_beam_node.outputs:horizontalResolution", "ros2_publish_laser_scan.inputs:horizontalResolution"),
-                    ("isaac_read_lidar_beam_node.outputs:intensitiesData", "ros2_publish_laser_scan.inputs:intensitiesData"),
-                    ("isaac_read_lidar_beam_node.outputs:linearDepthData", "ros2_publish_laser_scan.inputs:linearDepthData"),
-                    ("isaac_read_lidar_beam_node.outputs:numCols", "ros2_publish_laser_scan.inputs:numCols"),
-                    ("isaac_read_lidar_beam_node.outputs:numRows", "ros2_publish_laser_scan.inputs:numRows"),
-                    ("isaac_read_lidar_beam_node.outputs:rotationRate", "ros2_publish_laser_scan.inputs:rotationRate"),
-                    ("ros2_context.outputs:context", "ros2_publish_laser_scan.inputs:context"),
-                    ("constant_string_frame_id.inputs:value", "ros2_publish_laser_scan.inputs:frameId"),
-                    ("isaac_read_sim_time.outputs:simulationTime", "ros2_publish_laser_scan.inputs:timeStamp"),
+                    ("isaac_read_lidar_beam_node.outputs:execOut", "ros2_pub_laser_scan.inputs:execIn"),
+                    ("isaac_read_lidar_beam_node.outputs:azimuthRange", "ros2_pub_laser_scan.inputs:azimuthRange"),
+                    ("isaac_read_lidar_beam_node.outputs:depthRange", "ros2_pub_laser_scan.inputs:depthRange"),
+                    ("isaac_read_lidar_beam_node.outputs:horizontalFov", "ros2_pub_laser_scan.inputs:horizontalFov"),
+                    ("isaac_read_lidar_beam_node.outputs:horizontalResolution", "ros2_pub_laser_scan.inputs:horizontalResolution"),
+                    ("isaac_read_lidar_beam_node.outputs:intensitiesData", "ros2_pub_laser_scan.inputs:intensitiesData"),
+                    ("isaac_read_lidar_beam_node.outputs:linearDepthData", "ros2_pub_laser_scan.inputs:linearDepthData"),
+                    ("isaac_read_lidar_beam_node.outputs:numCols", "ros2_pub_laser_scan.inputs:numCols"),
+                    ("isaac_read_lidar_beam_node.outputs:numRows", "ros2_pub_laser_scan.inputs:numRows"),
+                    ("isaac_read_lidar_beam_node.outputs:rotationRate", "ros2_pub_laser_scan.inputs:rotationRate"),
+                    ("ros2_context.outputs:context", "ros2_pub_laser_scan.inputs:context"),
+                    ("constant_string_frame_id.inputs:value", "ros2_pub_laser_scan.inputs:frameId"),
+                    ("isaac_read_sim_time.outputs:simulationTime", "ros2_pub_laser_scan.inputs:timeStamp"),
                 ],
             }
         )
@@ -192,12 +209,11 @@ class Extension(omni.ext.IExt):
         read_lidar_og_path = f"{graph_path}/isaac_read_lidar_beam_node"
         usd_prim = self._stage.GetPrimAtPath(read_lidar_og_path)
         usd_prim.GetRelationship("inputs:lidarPrim").AddTarget(lidar_prim_path)
-        print(f"[+] Created lidar graph {lidar_num} at {graph_path}")
+        print(f"[+] Created {graph_path}")
     
     
-    def _setup_graph_kmp(self):
+    def _setup_graph_kmp(self, keys):
         graph_prim_path = "/kmp_controller_graph"
-        keys = og.Controller.Keys
         og.Controller.edit(
             {"graph_path": graph_prim_path, "evaluator_name": "execution"},
             {
@@ -247,9 +263,8 @@ class Extension(omni.ext.IExt):
         print(f"[+] Created {graph_prim_path}")
     
     
-    def _setup_graph_iiwa(self):
+    def _setup_graph_iiwa(self, keys):
         graph_prim_path = "/iiwa_controller_graph"
-        keys = og.Controller.Keys
         og.Controller.edit(
             {"graph_path": graph_prim_path, "evaluator_name": "execution"},
             {
@@ -266,3 +281,136 @@ class Extension(omni.ext.IExt):
         )
         print(f"[+] Created {graph_prim_path}")
     
+    
+    def _setup_tf_graph(self, keys):
+        graph_path = "/tf_pub_graph"
+        og.Controller.edit(
+            {"graph_path": graph_path, "evaluator_name": "execution"},
+            {
+                keys.CREATE_NODES: [
+                    ("on_playback_tick", "omni.graph.action.OnPlaybackTick"),
+                    ("ros2_context", "omni.isaac.ros2_bridge.ROS2Context"),
+                    ("isaac_read_sim_time", "omni.isaac.core_nodes.IsaacReadSimulationTime"),
+                    ("ros2_pub_tf", "omni.isaac.ros2_bridge.ROS2PublishTransformTree")
+                ],
+                keys.SET_VALUES: [
+                    ("ros2_context.outputs:context", 0),
+                ],
+                keys.CONNECT: [
+                    ("on_playback_tick.outputs:tick", "ros2_pub_tf.inputs:execIn"),
+                    ("ros2_context.outputs:context", "ros2_pub_tf.inputs:context"),
+                    ("isaac_read_sim_time.outputs:simulationTime", "ros2_pub_tf.inputs:timeStamp"),
+                ]
+            }
+        )
+        
+        tf_publisher_og_path = f"{graph_path}/ros2_pub_tf"
+        usd_prim = self._stage.GetPrimAtPath(tf_publisher_og_path)
+        usd_prim.GetRelationship("inputs:parentPrim").AddTarget(self._kmr_prim)
+        
+        # TODO: Problem with multiple targets
+        usd_prim.GetRelationship("inputs:targetPrims").AddTarget(f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar")
+        usd_prim.GetRelationship("inputs:targetPrims").AddTarget(f"{self._kmr_prim}/kmriiwa_laser_B4_link/Lidar")
+        # TODO: Add cameras and other relevant sensors
+        
+        print(f"[+] Created {graph_path}")
+    
+    
+    def _setup_odom_graph(self, keys):
+        # TODO!: Not connected to wheels!!!
+        graph_path = "/odom_pub_graph"
+        og.Controller.edit(
+            {"graph_path": graph_path, "evaluator_name": "execution"},
+            {
+                keys.CREATE_NODES: [
+                    ("on_playback_tick", "omni.graph.action.OnPlaybackTick"),
+                    ("ros2_context", "omni.isaac.ros2_bridge.ROS2Context"),
+                    ("isaac_read_sim_time", "omni.isaac.core_nodes.IsaacReadSimulationTime"),
+                    ("isaac_compute_odom", "omni.isaac.core_nodes.IsaacComputeOdometry"),
+                    ("ros2_pub_odom", "omni.isaac.ros2_bridge.ROS2PublishOdometry"),
+                    ("ros2_pub_raw_tf", "omni.isaac.ros2_bridge.ROS2PublishRawTransformTree"),
+                ],
+                keys.SET_VALUES: [
+                    ("ros2_context.outputs:context", 0),
+                    ("ros2_pub_raw_tf.inputs:topicName", "tf_raw"),
+                ],
+                keys.CONNECT: [
+                    ("on_playback_tick.outputs:tick", "isaac_compute_odom.inputs:execIn"),
+                    ("on_playback_tick.outputs:tick", "ros2_pub_odom.inputs:execIn"),
+                    ("on_playback_tick.outputs:tick", "ros2_pub_raw_tf.inputs:execIn"),
+                    ("ros2_context.outputs:context", "ros2_pub_odom.inputs:context"),
+                    ("ros2_context.outputs:context", "ros2_pub_raw_tf.inputs:context"),
+                    ("isaac_read_sim_time.outputs:simulationTime", "ros2_pub_odom.inputs:timeStamp"),
+                    ("isaac_read_sim_time.outputs:simulationTime", "ros2_pub_raw_tf.inputs:timeStamp"),
+                    ("isaac_compute_odom.outputs:angularVelocity", "ros2_pub_odom.inputs:angularVelocity"),
+                    ("isaac_compute_odom.outputs:linearVelocity", "ros2_pub_odom.inputs:linearVelocity"),
+                    ("isaac_compute_odom.outputs:orientation", "ros2_pub_odom.inputs:orientation"),
+                    ("isaac_compute_odom.outputs:position", "ros2_pub_odom.inputs:position"),
+                    ("isaac_compute_odom.outputs:orientation", "ros2_pub_raw_tf.inputs:rotation"),
+                    ("isaac_compute_odom.outputs:position", "ros2_pub_raw_tf.inputs:translation"),
+                ]
+            }
+        )
+        
+        compute_odom_og_path = f"{graph_path}/isaac_compute_odom"
+        usd_prim = self._stage.GetPrimAtPath(compute_odom_og_path)
+        usd_prim.GetRelationship("inputs:chassisPrim").AddTarget(self._kmr_prim)
+        
+        print(f"[+] Created {graph_path}")
+
+
+    def _setup_camera_graph(self, keys):
+        graph_path = "/camera_pub_graph"
+        og.Controller.edit(
+            {"graph_path": graph_path, "evaluator_name": "execution"},
+            {
+                keys.CREATE_NODES: [
+                    ("on_playback_tick", "omni.graph.action.OnPlaybackTick"),
+                    ("constant_uint", "omni.graph.nodes.ConstantUInt"),
+                    ("isaac_create_viewport", "omni.isaac.core_nodes.IsaacCreateViewport"),
+                    ("get_prim_path", "omni.graph.nodes.GetPrimPath"),
+                    ("set_active_camera", "omni.graph.ui.SetActiveViewportCamera"),
+                    ("frame_id", "omni.graph.nodes.ConstantString"),
+                    ("ros2_camera_helper_rgb", "omni.isaac.ros2_bridge.ROS2CameraHelper"),
+                    ("ros2_camera_helper_info", "omni.isaac.ros2_bridge.ROS2CameraHelper"),
+                    ("ros2_camera_helper_depth", "omni.isaac.ros2_bridge.ROS2CameraHelper"),
+                    ("ros2_context", "omni.isaac.ros2_bridge.ROS2Context"),
+                ],
+                keys.SET_VALUES: [
+                    ("constant_uint.inputs:value", 0),  # UNIQUE
+                    ("ros2_context.outputs:context", 0),
+                    ("frame_id.inputs:value", ROS2_FRAME_ID),  # TODO: Check if this frame is is working
+                    ("set_active_camera.inputs:primPath", "/World/Camera_1"),
+                    ("ros2_camera_helper_rgb.inputs:type", "rgb"),
+                    ("ros2_camera_helper_rgb.inputs:topicName", "rgb"),
+                    ("ros2_camera_helper_info.inputs:type", "camera_info"),
+                    ("ros2_camera_helper_info.inputs:topicName", "camera_info"),
+                    ("ros2_camera_helper_depth.inputs:type", "depth"),
+                    ("ros2_camera_helper_depth.inputs:topicName", "depth"),
+                ],
+                keys.CONNECT: [
+                    ("on_playback_tick.outputs:tick", "isaac_create_viewport.inputs:execIn"),
+                    ("constant_uint.inputs:value", "isaac_create_viewport.inputs:viewportId"),
+                    # ("get_prim_path.outputs:primPath", "set_active_camera.inputs:cameraPath"),
+                    ("isaac_create_viewport.outputs:execOut", "set_active_camera.inputs:execIn"),
+                    ("isaac_create_viewport.outputs:viewport", "set_active_camera.inputs:viewport"),
+                    ("isaac_create_viewport.outputs:viewport", "ros2_camera_helper_rgb.inputs:viewport"),
+                    ("isaac_create_viewport.outputs:viewport", "ros2_camera_helper_info.inputs:viewport"),
+                    ("isaac_create_viewport.outputs:viewport", "ros2_camera_helper_depth.inputs:viewport"),
+                    ("set_active_camera.outputs:execOut", "ros2_camera_helper_rgb.inputs:execIn"),
+                    ("set_active_camera.outputs:execOut", "ros2_camera_helper_info.inputs:execIn"),
+                    ("set_active_camera.outputs:execOut", "ros2_camera_helper_depth.inputs:execIn"),
+                    ("ros2_context.outputs:context", "ros2_camera_helper_rgb.inputs:context"),
+                    ("ros2_context.outputs:context", "ros2_camera_helper_info.inputs:context"),
+                    ("ros2_context.outputs:context", "ros2_camera_helper_depth.inputs:context"),
+                    ("frame_id.inputs:value", "ros2_camera_helper_rgb.inputs:frameId"),
+                    ("frame_id.inputs:value", "ros2_camera_helper_info.inputs:frameId"),
+                    ("frame_id.inputs:value", "ros2_camera_helper_depth.inputs:frameId"),
+                ]
+            }
+        )
+        # get_prim_path_og_path = f"{graph_path}/get_prim_path"
+        # usd_prim = self._stage.GetPrimAtPath(get_prim_path_og_path)
+        # usd_prim.GetRelationship("inputs:prim").AddTarget("/World/Camera_1")
+        
+        print(f"[+] Created {graph_path}")
