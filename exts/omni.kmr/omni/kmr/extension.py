@@ -8,8 +8,6 @@
 #
 
 import asyncio
-
-import carb
 import omni
 import omni.ui as ui
 import omni.kit.commands
@@ -17,20 +15,23 @@ import omni.graph.core as og
 from omni.isaac.urdf import _urdf
 from omni.isaac.core.utils.extensions import disable_extension, enable_extension
 from omni.isaac.range_sensor._range_sensor import acquire_lidar_sensor_interface
-from pxr import Sdf, Gf, UsdPhysics
+from pxr import Sdf, Gf, UsdPhysics, Usd, UsdGeom
 
 
 EXTENSION_NAME = "KMR iiwa importer"
-WAREHOUSE_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
+# ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
+# ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"
+ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/default_environment.usd"
+ENVIRONMENT_PRIM_PATH = "/World/environment"
 KMR_PATH = "/home/jorgen/kmriiwa_description/src/kmriiwa_description/urdf/robot/kmriiwa.urdf"
 
 class Extension(omni.ext.IExt):
     def on_startup(self, ext_id: str):
         print("[omni.kmr] MyExtension startup")
         disable_extension("omni.isaac.ros_bridge")
-        print("ROS Bridge disabled")
+        print("[+] ROS Bridge disabled")
         enable_extension("omni.isaac.ros2_bridge")
-        print("ROS 2 Bridge enabled")
+        print("[+] ROS 2 Bridge enabled")
         
         ext_manager = omni.kit.app.get_app().get_extension_manager()
         self._ext_id = ext_id
@@ -63,20 +64,22 @@ class Extension(omni.ext.IExt):
             scene.CreateGravityMagnitudeAttr().Set(9.81)
             
             # Create warehouse reference
-            ref_warehouse = self._stage.OverridePrim("/World/Warehouse")
+            ref_warehouse = self._stage.OverridePrim(ENVIRONMENT_PRIM_PATH)
             omni.kit.commands.execute("AddReference",
                 stage=self._stage,
-                prim_path=Sdf.Path("/World/Warehouse"),  # an existing prim to add the reference to.
-                reference=Sdf.Reference(WAREHOUSE_PATH)
+                prim_path=Sdf.Path(ENVIRONMENT_PRIM_PATH),  # an existing prim to add the reference to.
+                reference=Sdf.Reference(ENVIRONMENT_PATH)
             )
+            print("[+] Created environment")
             
             # Load robot urdf
             res, self._kmr_prim = self._load_kmr()
             self._rig_robot()
-            self._setup_graph_kmp()
+            # self._setup_graph_kmp()
             self._setup_graph_iiwa()
-            self._setup_ros2_graph()
-            
+            self._setup_lidar_graph(is_front_lidar=True)
+            self._setup_lidar_graph(is_front_lidar=False)
+                        
 
     def _load_kmr(self, urdf_filepath=KMR_PATH):
         import_config = _urdf.ImportConfig()
@@ -101,7 +104,15 @@ class Extension(omni.ext.IExt):
         )
         return result, prim_path
     
-    def _create_lidar_sensor(self, parent_prim):
+    
+    def _create_lidar_sensor(self, is_front_lidar: bool):
+        if is_front_lidar:
+            parent_prim = f"{self._kmr_prim}/kmriiwa_laser_B1_link"
+            yaw_offset = 0.0  # 45.0
+        else:
+            parent_prim = f"{self._kmr_prim}/kmriiwa_laser_B4_link"
+            yaw_offset = 0.0  # 225.0
+            
         result, prim = omni.kit.commands.execute(
             "RangeSensorCreateLidar",
             path="/Lidar",
@@ -110,41 +121,41 @@ class Extension(omni.ext.IExt):
             max_range=100.0,
             draw_points=False,
             draw_lines=False,
-            horizontal_fov=360.0,
+            horizontal_fov=270.0,
             vertical_fov=30.0,
             horizontal_resolution=0.4,
             vertical_resolution=4.0,
             rotation_rate=20.0,
             high_lod=False,
-            yaw_offset=0.0,
+            yaw_offset=yaw_offset,
             enable_semantics=False,
         )
+        
         if result:
-            print(f"Created lidar at {prim}")
+            print(f"[+] Created lidar at {prim}")
         else:
-            print(f"Failed creating lidar under{parent_prim}")
+            print(f"[!] Failed creating lidar under{parent_prim}")
         return result, prim
+
     
     def _rig_robot(self):
-        result1, self._lidar1_prim = self._create_lidar_sensor(f"{self._kmr_prim}/kmriiwa_laser_B1_link")
-        result2, self._lidar2_prim = self._create_lidar_sensor(f"{self._kmr_prim}/kmriiwa_laser_B4_link")
-        
+        result1, self._lidar1_prim = self._create_lidar_sensor(is_front_lidar=True)
+        result2, self._lidar2_prim = self._create_lidar_sensor(is_front_lidar=False)
         # TODO: Add cameras and other relevant sensors
         
     
-    def _setup_lidar_graph(self, lidar_prim):
-        # TODO Create generic function for creatig lidar publishers that takes a random lidar
-        return
-    
-    def _setup_ros2_graph(self):
-        print("TYPE:",type(self._lidar1_prim))
-        print("TYPE:",type(self._stage.GetPrimAtPath(Sdf.Path(self._kmr_prim))))
-        print("TYPE:",type(self._stage.GetPrimAtPath(Sdf.Path(f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar"))))
-        
-        
+    def _setup_lidar_graph(self, is_front_lidar: bool):
+        if is_front_lidar:
+            lidar_num = 1
+            lidar_prim_path = f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar"
+        else:
+            lidar_num = 2
+            lidar_prim_path = f"{self._kmr_prim}/kmriiwa_laser_B4_link/Lidar"
+            
+        graph_path = f"/lidar{lidar_num}_graph"
         keys = og.Controller.Keys
-        og.Controller.edit(
-            {"graph_path": "/ros2_graph", "evaluator_name": "execution"},
+        graph = og.Controller.edit(
+            {"graph_path": graph_path, "evaluator_name": "execution"},
             {
                 keys.CREATE_NODES: [
                     ("on_playback_tick", "omni.graph.action.OnPlaybackTick"),
@@ -155,10 +166,9 @@ class Extension(omni.ext.IExt):
                     ("ros2_publish_laser_scan", "omni.isaac.ros2_bridge.ROS2PublishLaserScan"),
                 ],
                 keys.SET_VALUES: [
-                    # TODO: Wrong type passed to "lidarPrim". Fix this later...
-                    ("isaac_read_lidar_beam_node.inputs:lidarPrim", self._stage.GetPrimAtPath(Sdf.Path(f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar"))),
-                    ("ros2_publish_laser_scan.inputs:topicName", "/laser_scan1"),
-                    ("constant_string_frame_id.inputs:value", "kmr")
+                    ("ros2_publish_laser_scan.inputs:topicName", f"/laser_scan{lidar_num}"),
+                    ("constant_string_frame_id.inputs:value", "kmr"),
+                    ("ros2_context.outputs:context", 0),
                 ],
                 keys.CONNECT: [
                     ("on_playback_tick.outputs:tick", "isaac_read_lidar_beam_node.inputs:execIn"),
@@ -178,11 +188,18 @@ class Extension(omni.ext.IExt):
                 ],
             }
         )
+        
+        read_lidar_og_path = f"{graph_path}/isaac_read_lidar_beam_node"
+        usd_prim = self._stage.GetPrimAtPath(read_lidar_og_path)
+        usd_prim.GetRelationship("inputs:lidarPrim").AddTarget(lidar_prim_path)
+        print(f"[+] Created lidar graph {lidar_num} at {graph_path}")
+    
     
     def _setup_graph_kmp(self):
+        graph_prim_path = "/kmp_controller_graph"
         keys = og.Controller.Keys
         og.Controller.edit(
-            {"graph_path": "/kmp_controller_graph", "evaluator_name": "execution"},
+            {"graph_path": graph_prim_path, "evaluator_name": "execution"},
             {
                 keys.CREATE_NODES: [
                     ("on_playback_tick", "omni.graph.action.OnPlaybackTick"),
@@ -227,16 +244,17 @@ class Extension(omni.ext.IExt):
                 ]
             }
         )
+        print(f"[+] Created {graph_prim_path}")
     
     
     def _setup_graph_iiwa(self):
+        graph_prim_path = "/iiwa_controller_graph"
         keys = og.Controller.Keys
         og.Controller.edit(
-            {"graph_path": "/iiwa_controller_graph", "evaluator_name": "execution"},
+            {"graph_path": graph_prim_path, "evaluator_name": "execution"},
             {
                 keys.CREATE_NODES: [
                     ("on_playback_tick", "omni.graph.action.OnPlaybackTick"),
-                    
                 ],
                 keys.SET_VALUES: [
                     
@@ -246,4 +264,5 @@ class Extension(omni.ext.IExt):
                 ]
             }
         )
+        print(f"[+] Created {graph_prim_path}")
     
