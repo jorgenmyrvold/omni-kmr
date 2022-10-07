@@ -86,7 +86,7 @@ class Extension(omni.ext.IExt):
             self._setup_lidar_graph(keys, is_front_lidar=True)
             self._setup_lidar_graph(keys, is_front_lidar=False)
             self._setup_tf_graph(keys)
-            self._setup_odom_graph(keys)
+            # self._setup_odom_graph(keys)
             self._setup_camera_graph(keys)
                         
 
@@ -153,6 +153,7 @@ class Extension(omni.ext.IExt):
         UsdGeom.Xformable(camera_prim).AddTranslateOp().Set((0., 0., 1.))
         UsdGeom.Xformable(camera_prim).AddRotateXYZOp().Set((90., 0., -90.))
         print(f"[+] Created {parent_prim}{camera_prim_name}")
+    
     
     def _rig_robot(self):
         result1, self._lidar1_prim = self._create_lidar_sensor(is_front_lidar=True)
@@ -305,11 +306,13 @@ class Extension(omni.ext.IExt):
         
         tf_publisher_og_path = f"{graph_path}/ros2_pub_tf"
         usd_prim = self._stage.GetPrimAtPath(tf_publisher_og_path)
-        usd_prim.GetRelationship("inputs:parentPrim").AddTarget(self._kmr_prim)
-        
+        # usd_prim.GetRelationship("inputs:parentPrim").AddTarget("/World")
+        usd_prim.GetRelationship("inputs:parentPrim").AddTarget(f"{self._kmr_prim}/kmriiwa_base_link")
+        # 
         # TODO: Problem with multiple targets
-        usd_prim.GetRelationship("inputs:targetPrims").AddTarget(f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar")
-        usd_prim.GetRelationship("inputs:targetPrims").AddTarget(f"{self._kmr_prim}/kmriiwa_laser_B4_link/Lidar")
+        # usd_prim.GetRelationship("inputs:targetPrims").AddTarget(f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar")
+        # usd_prim.GetRelationship("inputs:targetPrims").AddTarget(f"{self._kmr_prim}/kmriiwa_laser_B4_link/Lidar")
+        usd_prim.GetRelationship("inputs:targetPrims").AddTarget(self._kmr_prim)
         # TODO: Add cameras and other relevant sensors
         
         print(f"[+] Created {graph_path}")
