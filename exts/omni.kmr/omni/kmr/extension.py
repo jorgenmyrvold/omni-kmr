@@ -20,11 +20,14 @@ from pxr import Sdf, Gf, UsdPhysics, Usd, UsdGeom
 
 
 EXTENSION_NAME = "KMR iiwa importer"
-ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
+# ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
 # ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"
+ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/gridroom_curved.usd"
 # ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/default_environment.usd"
+# ENVIRONMENT_PATH = "/home/jorgen/.cache/ov/client/omniverse/localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/default_environment.usd"
 ENVIRONMENT_PRIM_PATH = "/World/environment"
-KMR_PATH = "/home/jorgen/kmriiwa_description/src/kmriiwa_description/urdf/robot/kmriiwa.urdf"
+KMR_PATH = "/home/jorgen/ros-ws/src/kmriiwa_description/urdf/robot/kmriiwa_no_wheels_new.urdf"
+OMNIWHEELS_PATH = "/home/jorgen/isaac_ws/omniwheels/"
 ROS2_FRAME_ID = "map"
 
 
@@ -82,12 +85,12 @@ class Extension(omni.ext.IExt):
             # Set up different omnigraphs
             keys = og.Controller.Keys
             # self._setup_graph_kmp()
-            self._setup_graph_iiwa(keys)
+            # self._setup_graph_iiwa(keys)
             self._setup_lidar_graph(keys, is_front_lidar=True)
             self._setup_lidar_graph(keys, is_front_lidar=False)
             self._setup_tf_graph(keys)
             # self._setup_odom_graph(keys)
-            self._setup_camera_graph(keys)
+            # self._setup_camera_graph(keys)
                         
 
     def _load_kmr(self, urdf_filepath=KMR_PATH):
@@ -113,7 +116,52 @@ class Extension(omni.ext.IExt):
         )
         return result, prim_path
     
+    def _load_omniwheels(self, omniwheels_path=OMNIWHEELS_PATH):
+        """
+        omnisheels_path should point to the directory where the four omniwheels with names
+        omniwheel_fl.usd, omniwheel_fr.usd, omniwheel_rl.usd, omniwheel_rr.usd
+        """
+        omniwheels = {"omniwheel_fl": "front_left", 
+                      "omniwheel_fr": "front_right", 
+                      "omniwheel_rl": "back_left",
+                      "omniwheel_rr": "back_right"}
+
+        for prim_name, wheel in omniwheels.items():
+            omniwheel_path = f"{self._kmr_prim}/{prim_name}"
+            omniwheel_prim = self._stage.DefinePrim(omniwheel_path)
+            # omniwheel_prim = self._stage.GetPrimAtPath(f"{self._kmr_prim}/kmriiwa_{wheel}_wheel_link")
+            omni.kit.commands.execute("AddReference",
+                stage=self._stage,
+                prim_path=Sdf.Path(omniwheel_path),
+                reference=Sdf.Reference(f"{omniwheels_path}/{prim_name}.usd")
+            )
+            if prim_name[-2:] == "fl":
+                UsdGeom.Xformable(omniwheel_prim).AddTranslateOp().Set((0.28, 0.4825, 0.17))  # Should be 0.28, 0.1825, 0.125
+                UsdGeom.Xformable(omniwheel_prim).AddRotateXYZOp().Set((0, 0, -90))
+            elif prim_name[-2:] == "fr":
+                UsdGeom.Xformable(omniwheel_prim).AddTranslateOp().Set((0.28, -0.4825, 0.17))
+                UsdGeom.Xformable(omniwheel_prim).AddRotateXYZOp().Set((0, 0, 90))
+            elif prim_name[-2:] == "rl":
+                UsdGeom.Xformable(omniwheel_prim).AddTranslateOp().Set((-0.28, 0.4825, 0.17))
+                UsdGeom.Xformable(omniwheel_prim).AddRotateXYZOp().Set((0, 0, -90))
+            elif prim_name[-2:] == "rr":
+                UsdGeom.Xformable(omniwheel_prim).AddTranslateOp().Set((-0.28, -0.4825, 0.17))
+                UsdGeom.Xformable(omniwheel_prim).AddRotateXYZOp().Set((0, 0, 90))
+
+            
+            # TODO: Create 4 joints and add bodies to their relationships
+            
+
+            # joint = self._stage.GetPrimAtPath(f"{self._kmr_prim}/kmriiwa_base_link/kmriiwa_{wheel}_wheel_joint")
+            # joint.GetRelationship("physics:body0").ClearTargets(removeSpec=False)
+            # joint.GetRelationship("physics:body1").ClearTargets(removeSpec=False)
+            # joint.GetRelationship("physics:body1").AddTarget(f"{self._kmr_prim}/kmriiwa_base_link")
+            # joint.GetRelationship("physics:body0").AddTarget(f"{omniwheel_path}/{wheel}/omniwheel")
+            
+
+        print("[+] Created omniwheels")
     
+
     def _create_lidar_sensor(self, is_front_lidar: bool):
         if is_front_lidar:
             parent_prim = f"{self._kmr_prim}/kmriiwa_laser_B1_link"
@@ -160,6 +208,7 @@ class Extension(omni.ext.IExt):
         result2, self._lidar2_prim = self._create_lidar_sensor(is_front_lidar=False)
         # TODO: Add cameras and other relevant sensors
         self._create_camera("/World", "/Camera_1")
+        self._load_omniwheels()
         
     
     def _setup_lidar_graph(self, keys, is_front_lidar: bool):
