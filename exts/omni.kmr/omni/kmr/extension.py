@@ -11,24 +11,25 @@ import asyncio
 import omni
 import omni.ui as ui
 import omni.kit.commands
-import omni.graph.core as og
-import omni.replicator.core as rep
-from omni.isaac.urdf import _urdf
+from omni.isaac.core_nodes.scripts.utils import set_target_prims
 from omni.isaac.core.utils.extensions import disable_extension, enable_extension
+from omni.isaac.dynamic_control import _dynamic_control
+import omni.graph.core as og
 from omni.isaac.range_sensor._range_sensor import acquire_lidar_sensor_interface
+from omni.isaac.urdf import _urdf
 from pxr import Sdf, Gf, UsdPhysics, Usd, UsdGeom
 
 
 EXTENSION_NAME = "KMR iiwa importer"
-# ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
+ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
 # ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"
-ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/gridroom_curved.usd"
+# ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/gridroom_curved.usd"
 # ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/default_environment.usd"
 # ENVIRONMENT_PATH = "/home/jorgen/.cache/ov/client/omniverse/localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/default_environment.usd"
 ENVIRONMENT_PRIM_PATH = "/World/environment"
 KMR_PATH = "/home/jorgen/ros-ws/src/kmriiwa_description/urdf/robot/kmriiwa_no_wheels_new.urdf"
 OMNIWHEELS_PATH = "/home/jorgen/isaac_ws/omniwheels/"
-ROS2_FRAME_ID = "map"
+ROS2_FRAME_ID = "world"
 
 
 class Extension(omni.ext.IExt):
@@ -53,6 +54,7 @@ class Extension(omni.ext.IExt):
         self._window = None
 
     def _on_load_scene(self):
+        self._dc = _dynamic_control.acquire_dynamic_control_interface()
         load_stage = asyncio.ensure_future(omni.usd.get_context().new_stage_async())
         asyncio.ensure_future(self._create_world(load_stage))
 
@@ -85,12 +87,12 @@ class Extension(omni.ext.IExt):
             # Set up different omnigraphs
             keys = og.Controller.Keys
             # self._setup_graph_kmp()
-            # self._setup_graph_iiwa(keys)
+            self._setup_graph_iiwa(keys)
             self._setup_lidar_graph(keys, is_front_lidar=True)
             self._setup_lidar_graph(keys, is_front_lidar=False)
             self._setup_tf_graph(keys)
-            # self._setup_odom_graph(keys)
-            # self._setup_camera_graph(keys)
+            self._setup_odom_graph(keys)
+            self._setup_camera_graph(keys)
                         
 
     def _load_kmr(self, urdf_filepath=KMR_PATH):
@@ -135,6 +137,11 @@ class Extension(omni.ext.IExt):
                 prim_path=Sdf.Path(omniwheel_path),
                 reference=Sdf.Reference(f"{omniwheels_path}/{prim_name}.usd")
             )
+            # omni.kit.commands.execute("AddPayload",
+            #     stage=self._stage,
+            #     prim_path=Sdf.Path(omniwheel_path),
+            #     payload=Sdf.Payload(f"{omniwheels_path}/{prim_name}.usd")
+            # )
             if prim_name[-2:] == "fl":
                 UsdGeom.Xformable(omniwheel_prim).AddTranslateOp().Set((0.28, 0.4825, 0.17))  # Should be 0.28, 0.1825, 0.125
                 UsdGeom.Xformable(omniwheel_prim).AddRotateXYZOp().Set((0, 0, -90))
@@ -151,7 +158,11 @@ class Extension(omni.ext.IExt):
             
             # TODO: Create 4 joints and add bodies to their relationships
             
+            # d6_props = _dynamic_control.DynamicControl.D6JointProperties()
 
+            # d6_props.GetRelationship("physic:body0").AddTarget(self._scene.GetPrimAtPath(f"{self._kmr_prim}/base_link"))
+
+            # joint = self._dc.create_d6_joint(d6_props)
             # joint = self._stage.GetPrimAtPath(f"{self._kmr_prim}/kmriiwa_base_link/kmriiwa_{wheel}_wheel_joint")
             # joint.GetRelationship("physics:body0").ClearTargets(removeSpec=False)
             # joint.GetRelationship("physics:body1").ClearTargets(removeSpec=False)
@@ -313,21 +324,41 @@ class Extension(omni.ext.IExt):
     
     
     def _setup_graph_iiwa(self, keys):
+        # TODO: example from https://docs.omniverse.nvidia.com/app_isaacsim/app_isaacsim/tutorial_ros2_manipulation.html#add-joint-states-in-extension
+        # Change to iiwa from Franka
         graph_prim_path = "/iiwa_controller_graph"
         og.Controller.edit(
             {"graph_path": graph_prim_path, "evaluator_name": "execution"},
             {
-                keys.CREATE_NODES: [
-                    ("on_playback_tick", "omni.graph.action.OnPlaybackTick"),
+                og.Controller.Keys.CREATE_NODES: [
+                    ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+                    ("PublishJointState", "omni.isaac.ros2_bridge.ROS2PublishJointState"),
+                    ("SubscribeJointState", "omni.isaac.ros2_bridge.ROS2SubscribeJointState"),
+                    ("ArticulationController", "omni.isaac.core_nodes.IsaacArticulationController"),
+                    ("ReadSimTime", "omni.isaac.core_nodes.IsaacReadSimulationTime"),
                 ],
-                keys.SET_VALUES: [
-                    
+                og.Controller.Keys.CONNECT: [
+                    ("OnPlaybackTick.outputs:tick", "PublishJointState.inputs:execIn"),
+                    ("OnPlaybackTick.outputs:tick", "SubscribeJointState.inputs:execIn"),
+                    ("OnPlaybackTick.outputs:tick", "ArticulationController.inputs:execIn"),
+
+                    ("ReadSimTime.outputs:simulationTime", "PublishJointState.inputs:timeStamp"),
+
+                    ("SubscribeJointState.outputs:jointNames", "ArticulationController.inputs:jointNames"),
+                    ("SubscribeJointState.outputs:positionCommand", "ArticulationController.inputs:positionCommand"),
+                    ("SubscribeJointState.outputs:velocityCommand", "ArticulationController.inputs:velocityCommand"),
+                    ("SubscribeJointState.outputs:effortCommand", "ArticulationController.inputs:effortCommand"),
                 ],
-                keys.CONNECT: [
-                    
-                ]
-            }
+                og.Controller.Keys.SET_VALUES: [
+                    # Providing path to /panda robot to Articulation Controller node
+                    # Providing the robot path is equivalent to setting the targetPrim in Articulation Controller node
+                    ("ArticulationController.inputs:usePath", True),
+                    ("ArticulationController.inputs:robotPath", "/panda"),
+                ],
+            },
         )
+        # Setting the /panda target prim to Publish JointState node
+        set_target_prims(primPath=f"{graph_prim_path}/PublishJointState", targetPrimPaths=[self._kmr_prim])
         print(f"[+] Created {graph_prim_path}")
     
     
@@ -356,7 +387,7 @@ class Extension(omni.ext.IExt):
         tf_publisher_og_path = f"{graph_path}/ros2_pub_tf"
         usd_prim = self._stage.GetPrimAtPath(tf_publisher_og_path)
         # usd_prim.GetRelationship("inputs:parentPrim").AddTarget("/World")
-        usd_prim.GetRelationship("inputs:parentPrim").AddTarget(f"{self._kmr_prim}/kmriiwa_base_link")
+        # usd_prim.GetRelationship("inputs:parentPrim").AddTarget(f"{self._kmr_prim}/kmriiwa_base_link")
         # 
         # TODO: Problem with multiple targets
         # usd_prim.GetRelationship("inputs:targetPrims").AddTarget(f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar")
