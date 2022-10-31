@@ -172,6 +172,12 @@ class Extension(omni.ext.IExt):
 
         print("[+] Created omniwheels")
     
+    def _rig_robot(self):
+        result1, self._lidar1_prim = self._create_lidar_sensor(is_front_lidar=True)
+        result2, self._lidar2_prim = self._create_lidar_sensor(is_front_lidar=False)
+        # TODO: Add cameras and other relevant sensors
+        self._create_camera("/World", "/Camera_1")
+        self._load_omniwheels()
 
     def _create_lidar_sensor(self, is_front_lidar: bool):
         if is_front_lidar:
@@ -214,22 +220,20 @@ class Extension(omni.ext.IExt):
         print(f"[+] Created {parent_prim}{camera_prim_name}")
     
     
-    def _rig_robot(self):
-        result1, self._lidar1_prim = self._create_lidar_sensor(is_front_lidar=True)
-        result2, self._lidar2_prim = self._create_lidar_sensor(is_front_lidar=False)
-        # TODO: Add cameras and other relevant sensors
-        self._create_camera("/World", "/Camera_1")
-        self._load_omniwheels()
+   
         
     
     def _setup_lidar_graph(self, keys, is_front_lidar: bool):
         if is_front_lidar:
             lidar_num = 1
-            lidar_prim_path = f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar"
+            # lidar_prim_path = f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar"
+            lidar_frame_id = "kmriiwa_laser_B1_link"
         else:
             lidar_num = 2
-            lidar_prim_path = f"{self._kmr_prim}/kmriiwa_laser_B4_link/Lidar"
+            # lidar_prim_path = f"{self._kmr_prim}/kmriiwa_laser_B4_link/Lidar"
+            lidar_frame_id = "kmriiwa_laser_B4_link"
             
+        lidar_prim_path = f"{self._kmr_prim}/{lidar_frame_id}/Lidar"
         graph_path = f"/lidar{lidar_num}_graph"
         og.Controller.edit(
             {"graph_path": graph_path, "evaluator_name": "execution"},
@@ -244,7 +248,7 @@ class Extension(omni.ext.IExt):
                 ],
                 keys.SET_VALUES: [
                     ("ros2_pub_laser_scan.inputs:topicName", f"/laser_scan{lidar_num}"),
-                    ("constant_string_frame_id.inputs:value", ROS2_FRAME_ID),
+                    ("constant_string_frame_id.inputs:value", lidar_frame_id),
                     ("ros2_context.outputs:context", 0),
                 ],
                 keys.CONNECT: [
