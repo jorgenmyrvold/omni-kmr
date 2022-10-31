@@ -118,6 +118,7 @@ class Extension(omni.ext.IExt):
         )
         return result, prim_path
     
+
     def _load_omniwheels(self, omniwheels_path=OMNIWHEELS_PATH):
         """
         omnisheels_path should point to the directory where the four omniwheels with names
@@ -172,6 +173,7 @@ class Extension(omni.ext.IExt):
 
         print("[+] Created omniwheels")
     
+
     def _rig_robot(self):
         result1, self._lidar1_prim = self._create_lidar_sensor(is_front_lidar=True)
         result2, self._lidar2_prim = self._create_lidar_sensor(is_front_lidar=False)
@@ -179,13 +181,16 @@ class Extension(omni.ext.IExt):
         self._create_camera("/World", "/Camera_1")
         self._load_omniwheels()
 
+
     def _create_lidar_sensor(self, is_front_lidar: bool):
         if is_front_lidar:
             parent_prim = f"{self._kmr_prim}/kmriiwa_laser_B1_link"
             yaw_offset = 0.0  # 45.0
+            horizontal_fov = 246.0  # Experimental values
         else:
             parent_prim = f"{self._kmr_prim}/kmriiwa_laser_B4_link"
             yaw_offset = 0.0  # 225.0
+            horizontal_fov = 249.0  # Experimental values
             
         result, prim = omni.kit.commands.execute(
             "RangeSensorCreateLidar",
@@ -195,7 +200,7 @@ class Extension(omni.ext.IExt):
             max_range=100.0,
             draw_points=False,
             draw_lines=False,
-            horizontal_fov=270.0,
+            horizontal_fov=horizontal_fov,
             vertical_fov=30.0,
             horizontal_resolution=0.4,
             vertical_resolution=4.0,
@@ -220,19 +225,14 @@ class Extension(omni.ext.IExt):
         print(f"[+] Created {parent_prim}{camera_prim_name}")
     
     
-   
-        
-    
     def _setup_lidar_graph(self, keys, is_front_lidar: bool):
         if is_front_lidar:
             lidar_num = 1
-            # lidar_prim_path = f"{self._kmr_prim}/kmriiwa_laser_B1_link/Lidar"
             lidar_frame_id = "kmriiwa_laser_B1_link"
         else:
             lidar_num = 2
-            # lidar_prim_path = f"{self._kmr_prim}/kmriiwa_laser_B4_link/Lidar"
             lidar_frame_id = "kmriiwa_laser_B4_link"
-            
+
         lidar_prim_path = f"{self._kmr_prim}/{lidar_frame_id}/Lidar"
         graph_path = f"/lidar{lidar_num}_graph"
         og.Controller.edit(
