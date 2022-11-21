@@ -21,13 +21,15 @@ from pxr import Sdf, Gf, UsdPhysics, Usd, UsdGeom
 
 
 EXTENSION_NAME = "KMR iiwa importer"
-ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
+# ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd"
 # ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"
-# ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/gridroom_curved.usd"
+ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/gridroom_curved.usd"
 # ENVIRONMENT_PATH = "omniverse://localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/default_environment.usd"
 # ENVIRONMENT_PATH = "/home/jorgen/.cache/ov/client/omniverse/localhost/NVIDIA/Assets/Isaac/2022.1/Isaac/Environments/Grid/default_environment.usd"
 ENVIRONMENT_PRIM_PATH = "/World/environment"
-KMR_PATH = "/home/jorgen/ros-ws/src/kmriiwa_description/urdf/robot/kmriiwa_no_wheels_new.urdf"
+# KMR_PATH = "/home/jorgen/ros-ws/src/kmriiwa_description/urdf/robot/kmriiwa_no_wheels_new.urdf"
+# KMR_PATH = "/home/jorgen/misc_repos/kmriiwa_ws_devel/src/kmr_bringup/urdf/kmriiwa_withcameraframes.urdf"
+KMR_PATH = "/home/jorgen/ros2-ws/src/kmr_description/urdf/robot/kmriiwa.urdf"
 OMNIWHEELS_PATH = "/home/jorgen/isaac_ws/omniwheels/"
 ROS2_FRAME_ID = "world"
 
@@ -92,7 +94,7 @@ class Extension(omni.ext.IExt):
             self._setup_lidar_graph(keys, is_front_lidar=False)
             self._setup_tf_graph(keys)
             self._setup_odom_graph(keys)
-            self._setup_camera_graph(keys)
+            # self._setup_camera_graph(keys)
                         
 
     def _load_kmr(self, urdf_filepath=KMR_PATH):
@@ -107,7 +109,7 @@ class Extension(omni.ext.IExt):
         import_config.import_inertia_tensor = False
         import_config.default_drive_strength = 1047.19751
         import_config.default_position_drive_damping = 52.35988
-        import_config.default_drive_type = _urdf.UrdfJointTargetType.JOINT_DRIVE_VELOCITY
+        import_config.default_drive_type = _urdf.UrdfJointTargetType.JOINT_DRIVE_POSITION  # JOINT_DRIVE_VELOCITY of JOINT_DRIVE_POSITION
         import_config.distance_scale = 1
         import_config.density = 0.0
         
@@ -178,7 +180,7 @@ class Extension(omni.ext.IExt):
         result1, self._lidar1_prim = self._create_lidar_sensor(is_front_lidar=True)
         result2, self._lidar2_prim = self._create_lidar_sensor(is_front_lidar=False)
         # TODO: Add cameras and other relevant sensors
-        self._create_camera("/World", "/Camera_1")
+        # self._create_camera("/World", "/Camera_1")
         self._load_omniwheels()
 
 
@@ -345,9 +347,7 @@ class Extension(omni.ext.IExt):
                     ("OnPlaybackTick.outputs:tick", "PublishJointState.inputs:execIn"),
                     ("OnPlaybackTick.outputs:tick", "SubscribeJointState.inputs:execIn"),
                     ("OnPlaybackTick.outputs:tick", "ArticulationController.inputs:execIn"),
-
                     ("ReadSimTime.outputs:simulationTime", "PublishJointState.inputs:timeStamp"),
-
                     ("SubscribeJointState.outputs:jointNames", "ArticulationController.inputs:jointNames"),
                     ("SubscribeJointState.outputs:positionCommand", "ArticulationController.inputs:positionCommand"),
                     ("SubscribeJointState.outputs:velocityCommand", "ArticulationController.inputs:velocityCommand"),
@@ -357,7 +357,7 @@ class Extension(omni.ext.IExt):
                     # Providing path to /panda robot to Articulation Controller node
                     # Providing the robot path is equivalent to setting the targetPrim in Articulation Controller node
                     ("ArticulationController.inputs:usePath", True),
-                    ("ArticulationController.inputs:robotPath", "/panda"),
+                    ("ArticulationController.inputs:robotPath", self._kmr_prim),
                 ],
             },
         )
